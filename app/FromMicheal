@@ -1,0 +1,269 @@
+package com.dw;
+
+import com.couchbase.client.core.env.ThresholdLoggingTracerConfig;
+import com.couchbase.client.core.env.TimeoutConfig;
+import com.couchbase.client.core.error.CouchbaseException;
+import com.couchbase.client.core.error.TimeoutException;
+import com.couchbase.client.java.Cluster;
+import com.couchbase.client.java.AsyncCluster;
+import com.couchbase.client.java.ClusterOptions;
+import com.couchbase.client.java.Bucket;
+import com.couchbase.client.java.AsyncBucket;
+import com.couchbase.client.java.Scope;
+import com.couchbase.client.java.AsyncScope;
+import com.couchbase.client.java.Collection;
+import com.couchbase.client.java.AsyncCollection;
+import com.couchbase.client.java.codec.RawJsonTranscoder;
+import com.couchbase.client.java.env.ClusterEnvironment;
+import com.couchbase.client.java.json.JsonArray;
+import com.couchbase.client.java.json.JsonObject;
+import com.couchbase.client.java.kv.InsertOptions;
+import com.couchbase.client.java.kv.MutationResult;
+import com.couchbase.client.java.query.QueryResult;
+import com.couchbase.client.java.query.QueryScanConsistency;
+
+import static com.couchbase.client.java.query.QueryOptions.queryOptions;
+import com.couchbase.client.java.codec.RawJsonTranscoder;
+
+import java.util.UUID;
+import java.util.Random;
+
+// File IO
+import java.io.FileWriter;
+import java.io.BufferedWriter;
+import java.io.IOException;  // Import the IOException class to handle errors
+
+// log4J/SLF4J 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+// Time 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.ZoneId;
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CompletableFuture;
+
+
+public class TraceApp {
+  // Update these variables to point to your Couchbase Server instance and credentials.
+  static String endpoint = "couchbases://cb.lapq1t8mpvdlycj3.cloud.couchbase.com";
+  static String username = "Administrator";
+  static String password = "P@ssw0rd";
+  static String bucketName = "fdc";
+  static String scopeName = "poc";
+  static String collectionName = "trace"; 
+  private static Logger LOGGER = LoggerFactory.getLogger(TraceApp.class);
+
+  public static void main( String[] args ) throws IOException, InterruptedException {
+
+    ThresholdLoggingTracerConfig.Builder config = ThresholdLoggingTracerConfig.builder()
+             .emitInterval(Duration.ofMinutes(1)).kvThreshold(Duration.ofSeconds(60)); 
+
+    // add 24.01.23 park
+    //  ClusterEnvironment env = ClusterEnvironment.builder()
+    //      .securityConfig(SecurityConfig.enableTls(false))
+    //      .timeoutConfig(TimeoutConfig.kvTimeout(Duration.ofSeconds(30))
+    //                     .kvDurableTimeout(Duration.ofSeconds(40)))
+    //      .applyProfile("wan-development")
+    //      .thresholdLoggingTracerConfig(config)
+    //      .build();
+
+    Cluster cluster = Cluster.connect(endpoint, ClusterOptions.clusterOptions(username, password)
+        // Use the pre-configured profile below to avoid latency issues with your connection.
+      .environment(env -> env.applyProfile("wan-development"))
+      //.environment(env)
+    );
+    
+    // get a bucket reference
+    Bucket bucket = cluster.bucket(bucketName);
+    bucket.waitUntilReady(Duration.ofSeconds(10));
+    Scope scope = bucket.scope(scopeName);
+    Collection collection = scope.collection(collectionName);
+
+    // 현재 날짜 구하기 (시스템 시계, 시스템 타임존)        
+    LocalDateTime starttime = LocalDateTime.now();
+    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("YYYY-MM-DD HH:mm:ss[.SSS]");
+    LOGGER.info("================ Insert Start Time : " + starttime.format(formatter));
+
+  	long t0 = System.currentTimeMillis();
+  	AtomicInteger errorCount = new AtomicInteger();
+  	ConcurrentHashMap<Class<?>, AtomicInteger> reasonMap = new ConcurrentHashMap<>();
+  	AtomicInteger successCount = new AtomicInteger();
+  	AtomicInteger concurrent = new AtomicInteger();
+  	AtomicInteger maxConcurrent = new AtomicInteger();
+
+    // i 는 Trace의 건 수
+    for (int i=1; i<=10; i++) {
+
+      // Make UUID for key
+      String dockey = UUID.randomUUID().toString();
+      //String dockey = "0001";
+
+      // make Document Key : eqpId + eventTime
+      String eqpid = args[0];
+      // String eqpid = "M16EQP001";
+      String datetime = LocalDateTime.now().format(formatter);
+      //String dockey = eqpid + datetime;
+        
+      // int randomIndex = random.nextInt(array.length); // 배열 길이 내에서 랜덤한 인덱스 생성
+      // String selectedCountry = array[randomIndex];
+
+      JsonObject traceDoc = JsonObject.create()
+        .put("command", "TODLDATA")
+        .put("eqpId", eqpid)
+        .put("headerList", JsonArray.create())
+        .put("lotId", "LOT123_SLOT12345, LOT124_SLOT12345,LOT125_SLOT12345")
+        .put("recpId", "RECIPE1, RECIPE2, RECIPE3")
+        .put("collectionInterval", 1.0)
+        .put("collectionType", "SECS")
+        // .put("eventTime", "2023-05-15 10:24:49.601")
+        .put("eventTime", datetime)
+        .put("trId", "101")
+        .put("deviceOrder", 1)
+        .put("chamberRawList", JsonArray.create())
+        .put("chamberAliasList", "M16EQP123_CH1, M16EQP123_CH2, M16EQP123_CH3")
+        .put("recodeValue", JsonArray.create());
+        // .put("ts_start", System.currentTimeMillis())
+        // .put("ts_end", System.currentTimeMillis()+100)
+        // .put("ts_interval", 100)
+        // .put("ts_data", json);
+
+        traceDoc.getArray("headerList")
+          .add("TDS")
+          .add("M16ThinFirm01")
+          .add("M16ThinFirm01");
+
+  			// j is numbner of recodeValue sub-documents
+        for (int j=1; j<=190; j++) {
+            traceDoc.getArray("chamberRawList").add("13000"+j);
+        }
+
+        // j is numbner of recodeValue sub-documents
+        for (int j=1; j<=190; j++) {            
+          String chamberkey = "13000"+j;
+          JsonObject recodeDoc = JsonObject.create()
+            .put("chamberRawId", chamberkey)
+            .put("chamberTypeRawId", "1678289")
+            .put("chamberTypeName", "CHAMBER_TYPE_NAME")
+            .put("chamberAlias", "M16EQP123_CH"+j)
+            .put("moduleName", "M16EQP123_CH"+j)
+            .put("mesChamberName", "M16EQP123_CH"+j)
+            /* Chamber에 설정된 모든 Context 파라메터 정보 */
+            .put("LOT_ID", "LOT123__SLOT12345")
+            .put("SLOT_NO", "1")
+            .put("LOT_TYPE", "PRODOCTION")
+            .put("aLotOfEtcData", "11222222asdfljsaldfjlasjdflksjfdljsdlfkjlsdkfjlksdjflskdjflksdjflkasjdfl")
+            /* Trace Parameter 정보 */
+            /* 반드시 해당 Messages의 Collection Interval과 Collection Type이 동일한 파라메터 목록에 추가되어야 함 */
+            .put("svidList", JsonArray.create())
+            .put("paramAliasList", JsonArray.create())
+            .put("param_name_list", JsonArray.create())
+            .put("param_value_list",JsonArray.create());
+
+            recodeDoc.getArray("svidList")
+              .add(JsonObject.create()
+                  .put("svid", i+"00001")
+                  .put("value","1"))
+              .add(JsonObject.create()
+                  .put("svid",i+"00002")
+                  .put("value","2"));
+
+            recodeDoc.getArray("paramAliasList").add("PARAM1")
+              .add("PARAM_COUNT")
+              .add("PARAM2");
+            recodeDoc.getArray("param_name_list").add("Param1")
+              .add("Param_Count")
+              .add("Param2");
+            recodeDoc.getArray("param_value_list").add("1")
+              .add("2")
+              .add("3");
+
+            traceDoc.getArray("recodeValue")
+              .add(JsonObject.create()
+                 .put(chamberkey, recodeDoc));
+          }
+
+          //for (int k = 0; k < 10; k++) {
+            try {
+				      // for Normal Mode
+				      //MutationResult mr = collection.insert(dockey, traceDoc.toString(),
+				      //InsertOptions.insertOptions().transcoder(RawJsonTranscoder.INSTANCE));
+
+			        // for Reactive Mode
+				      int ip = concurrent.incrementAndGet();
+				      if (ip > maxConcurrent.get()) {
+			        		maxConcurrent.set(ip);
+				      }
+				      collection.reactive().insert(dockey, traceDoc.toString(),
+				       		InsertOptions.insertOptions().transcoder(RawJsonTranscoder.INSTANCE))
+				        	  .doOnSuccess(t -> {
+						                 	concurrent.decrementAndGet();
+						                	successCount.incrementAndGet();
+					             	}).doOnError(e -> {
+						                 	concurrent.decrementAndGet();
+						                	countException(errorCount, reasonMap, e);
+					            	}).subscribe();
+
+				      // for Async mode
+				      //MutationResult mr = collection.async().insert(dockey, traceDoc.toString(),
+				      //   InsertOptions.insertOptions().transcoder(RawJsonTranscoder.INSTANCE)).get();
+              //collection.async().insert(dockey, traceDoc.toString(),InsertOptions.insertOptions().transcoder(RawJsonTranscoder.INSTANCE));
+            } catch (TimeoutException ex) {
+              LOGGER.error("TimeoutException : "+ex+", retrying.");
+              // propagate, since time budget's up
+              // 0.1초에 1건 insert 하기 위한 sleep.
+              // Thread.sleep(100);
+              // break;
+            } catch (CouchbaseException ex) {
+              LOGGER.error("CouchbaseExeption : "+ex+", retrying.");
+              // don't break, so retry
+            }
+          //}
+    }
+
+    while (errorCount.get() + successCount.get() < 10) {
+        Thread.sleep(100);
+    }
+  
+    LOGGER.info("================ Number of success  : " + successCount.get());
+    LOGGER.info("================ Number of errors   : " + errorCount.get());
+    LOGGER.info("================ Max concurrent req : " + maxConcurrent.get());
+  
+    for (Map.Entry me : reasonMap.entrySet()) {
+        LOGGER.info("================ Reason : " + me);
+    }
+
+    // 현재 날짜 구하기 (시스템 시계, 시스템 타임존)        
+    LocalDateTime endtime = LocalDateTime.now();
+    LOGGER.info("================ Insert End Time : " + endtime.format(formatter));
+
+    LOGGER.info("====== select count(*) as num_of_trace from trace =======");
+    try {
+        final QueryResult sqlresult = cluster.query("select count(*) as num_of_trace from `fdc`.poc.trace",
+          queryOptions().metrics(true).scanConsistency(QueryScanConsistency.REQUEST_PLUS));
+        LOGGER.info("================ SQL Result : " + sqlresult.rowsAsObject());
+        LOGGER.info("================ Reported execution time: " + sqlresult.metaData().metrics().get().executionTime());
+    } catch (CouchbaseException ex) {
+        ex.printStackTrace();
+        LOGGER.error("================== ERROR : Query Execution =====");
+    }
+    //Thread.sleep(10000);
+    cluster.disconnect();
+  }
+
+  private static void countException(AtomicInteger count, ConcurrentHashMap<Class<?>, AtomicInteger> reasonMap,
+                 Throwable e) {
+      count.incrementAndGet();
+      AtomicInteger c = reasonMap.get(e.getClass());
+      if (count != null) {
+         c.incrementAndGet();
+      } else {
+        c = new AtomicInteger(1);
+      }
+      reasonMap.put(e.getClass(), c);
+  }
+}
